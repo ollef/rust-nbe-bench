@@ -79,9 +79,7 @@ pub enum Value<'a> {
         head: Head,
         spine: ConstantSpine<'a>,
     },
-    Literal(Literal),
-    Lambda(TypeRef<'a>, Closure<'a>),
-    Pi(TypeRef<'a>, Closure<'a>),
+    Lambda(Closure<'a>),
 }
 
 pub type Type<'a> = Value<'a>;
@@ -142,16 +140,8 @@ impl Builder {
         self.arena.put_no_drop(Value::Neutral { head, spine })
     }
 
-    pub fn literal<'a>(&'a self, literal: Literal) -> ValueRef<'a> {
-        self.arena.put(Value::Literal(literal))
-    }
-
-    pub fn lambda<'a>(&'a self, type_: TypeRef<'a>, body: Closure<'a>) -> ValueRef<'a> {
-        self.arena.put_no_drop(Value::Lambda(type_, body))
-    }
-
-    pub fn pi<'a>(&'a self, domain: TypeRef<'a>, target: Closure<'a>) -> ValueRef<'a> {
-        self.arena.put_no_drop(Value::Pi(domain, target))
+    pub fn lambda<'a>(&'a self, body: Closure<'a>) -> ValueRef<'a> {
+        self.arena.put_no_drop(Value::Lambda(body))
     }
 }
 
@@ -179,13 +169,11 @@ impl<'a> Value<'a> {
                 head.clone(),
                 ConstantSpine::from_iter(spine.iter().chain(std::iter::once(argument)), builder),
             ),
-            Value::Literal(_) => panic!("Applying literal"),
-            Value::Lambda(_type, Closure { term, environment }) => {
+            Value::Lambda(Closure { term, environment }) => {
                 let mut environment = Environment::from(environment);
                 environment.extend(argument);
                 term.evaluate(&mut environment, builder)
             }
-            Value::Pi(_, _) => panic!("Applying pi"),
         }
     }
 
@@ -208,10 +196,7 @@ impl<'a> Value<'a> {
                 );
                 builder.neutral(head.clone(), spine)
             }
-            Value::Literal(literal) => {
-                panic!("Applying literal")
-            }
-            Value::Lambda(_type, Closure { term, environment }) => {
+            Value::Lambda(Closure { term, environment }) => {
                 if let Some(argument) = spine.pop_front() {
                     let mut environment = Environment::from(environment);
                     environment.extend(argument);
@@ -219,9 +204,6 @@ impl<'a> Value<'a> {
                 } else {
                     self
                 }
-            }
-            Value::Pi(_, _) => {
-                panic!("Applying pi")
             }
         }
     }
@@ -247,33 +229,16 @@ impl<'a> Term<'a> {
                 let head = environment[*index];
                 head.apply_spine(spine, builder)
             }
-            Term::Literal(literal) => {
-                assert!(spine.is_empty());
-                builder.literal(literal.clone())
-            }
-            Term::Lambda(type_, body) => {
+            Term::Lambda(body) => {
                 if let Some(argument) = spine.pop_front() {
                     environment.extend(argument);
                     body.evaluate_with_spine(spine, environment, builder)
                 } else {
-                    let type_ = type_.evaluate(environment, builder);
-                    builder.lambda(
-                        type_,
-                        Closure {
-                            term: body,
-                            environment: ConstantEnvironment::from(environment, builder),
-                        },
-                    )
+                    builder.lambda(Closure {
+                        term: body,
+                        environment: ConstantEnvironment::from(environment, builder),
+                    })
                 }
-            }
-            Term::Pi(domain, target) => {
-                assert!(spine.is_empty());
-                let domain = domain.evaluate(environment, builder);
-                let target_closure = Closure {
-                    environment: ConstantEnvironment::from(environment, builder),
-                    term: target,
-                };
-                builder.pi(domain, target_closure)
             }
             Term::Application(function, argument) => {
                 let argument =
@@ -294,28 +259,15 @@ impl<'a> Value<'a> {
     ) -> syntax::TermRef<'a> {
         match self {
             Value::Neutral { head, spine } => head.quote(spine, level, builder, syntax_builder),
-            Value::Literal(literal) => syntax_builder.literal(literal.clone()),
-            Value::Lambda(type_, closure) => {
-                syntax_builder.lambda(type_.quote(level, builder, syntax_builder), {
-                    let mut environment = Environment::from(&closure.environment);
-                    environment.extend(builder.variable(level));
-                    closure.term.evaluate(&mut environment, builder).quote(
-                        Level { int: level.int + 1 },
-                        builder,
-                        syntax_builder,
-                    )
-                })
-            }
-            Value::Pi(domain, target_closure) => {
-                syntax_builder.pi(domain.quote(level, builder, syntax_builder), {
-                    let mut environment = Environment::from(&target_closure.environment);
-                    environment.extend(builder.variable(level));
-                    target_closure
-                        .term
-                        .evaluate(&mut environment, builder)
-                        .quote(Level { int: level.int + 1 }, builder, syntax_builder)
-                })
-            }
+            Value::Lambda(closure) => syntax_builder.lambda({
+                let mut environment = Environment::from(&closure.environment);
+                environment.extend(builder.variable(level));
+                closure.term.evaluate(&mut environment, builder).quote(
+                    Level { int: level.int + 1 },
+                    builder,
+                    syntax_builder,
+                )
+            }),
         }
     }
 }

@@ -53,9 +53,7 @@ pub enum Value<'a> {
         head: Head,
         spine: Vec<ValueRef<'a>>,
     },
-    Literal(Literal),
-    Lambda(TypeRef<'a>, Closure<'a>),
-    Pi(TypeRef<'a>, Closure<'a>),
+    Lambda(Closure<'a>),
 }
 
 pub type Type<'a> = Value<'a>;
@@ -107,13 +105,11 @@ pub fn apply<'a>(function: &Value<'a>, argument: ValueRef<'a>) -> ValueRef<'a> {
             head: head.clone(),
             spine: Vec::from_iter(spine.iter().cloned().chain(std::iter::once(argument))),
         }),
-        Value::Literal(_) => panic!("Applying literal"),
-        Value::Lambda(_type, Closure { term, environment }) => {
+        Value::Lambda(Closure { term, environment }) => {
             let mut environment = environment.clone();
             environment.extend(argument);
             term.evaluate_rc(&mut environment)
         }
-        Value::Pi(_, _) => panic!("Applying pi"),
     }
 }
 
@@ -133,10 +129,7 @@ pub fn apply_spine<'a>(function: &ValueRef<'a>, mut spine: Spine<'a>) -> ValueRe
                 spine: new_spine,
             })
         }
-        Value::Literal(_) => {
-            panic!("Applying literal")
-        }
-        Value::Lambda(_type, Closure { term, environment }) => {
+        Value::Lambda(Closure { term, environment }) => {
             if let Some(argument) = spine.pop_front() {
                 let mut environment = environment.clone();
                 environment.extend(argument);
@@ -144,9 +137,6 @@ pub fn apply_spine<'a>(function: &ValueRef<'a>, mut spine: Spine<'a>) -> ValueRe
             } else {
                 function.clone()
             }
-        }
-        Value::Pi(_, _) => {
-            panic!("Applying pi")
         }
     }
 }
@@ -166,33 +156,16 @@ impl<'a> Term<'a> {
                 let head = &environment[*index];
                 apply_spine(head, spine)
             }
-            Term::Literal(literal) => {
-                assert!(spine.is_empty());
-                Rc::new(Value::Literal(literal.clone()))
-            }
-            Term::Lambda(type_, body) => {
+            Term::Lambda(body) => {
                 if let Some(argument) = spine.pop_front() {
                     environment.extend(argument);
                     body.evaluate_with_spine_rc(spine, environment)
                 } else {
-                    let type_ = type_.evaluate_rc(environment);
-                    Rc::new(Value::Lambda(
-                        type_,
-                        Closure {
-                            term: body,
-                            environment: environment.clone(),
-                        },
-                    ))
+                    Rc::new(Value::Lambda(Closure {
+                        term: body,
+                        environment: environment.clone(),
+                    }))
                 }
-            }
-            Term::Pi(domain, target) => {
-                assert!(spine.is_empty());
-                let domain = domain.evaluate_rc(environment);
-                let target_closure = Closure {
-                    environment: environment.clone(),
-                    term: target,
-                };
-                Rc::new(Value::Pi(domain, target_closure))
             }
             Term::Application(function, argument) => {
                 let argument = argument.evaluate_rc(environment);
@@ -207,23 +180,12 @@ impl<'a> Value<'a> {
     pub fn quote(&self, level: Level, syntax_builder: &'a syntax::Builder) -> syntax::TermRef<'a> {
         match self {
             Value::Neutral { head, spine } => head.quote(spine, level, syntax_builder),
-            Value::Literal(literal) => syntax_builder.literal(literal.clone()),
-            Value::Lambda(type_, Closure { term, environment }) => {
-                syntax_builder.lambda(type_.quote(level, syntax_builder), {
-                    let mut environment = environment.clone();
-                    environment.extend(Value::variable(level));
-                    term.evaluate_rc(&mut environment)
-                        .quote(Level { int: level.int + 1 }, syntax_builder)
-                })
-            }
-            Value::Pi(domain, Closure { term, environment }) => {
-                syntax_builder.pi(domain.quote(level, syntax_builder), {
-                    let mut environment = environment.clone();
-                    environment.extend(Value::variable(level));
-                    term.evaluate_rc(&mut environment)
-                        .quote(Level { int: level.int + 1 }, &syntax_builder)
-                })
-            }
+            Value::Lambda(Closure { term, environment }) => syntax_builder.lambda({
+                let mut environment = environment.clone();
+                environment.extend(Value::variable(level));
+                term.evaluate_rc(&mut environment)
+                    .quote(Level { int: level.int + 1 }, syntax_builder)
+            }),
         }
     }
 }
