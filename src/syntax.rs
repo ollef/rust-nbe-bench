@@ -41,11 +41,7 @@ impl Builder {
         self.arena.put_no_drop(Term::Pi(domain, target))
     }
 
-    pub fn application<'a>(
-        &'a mut self,
-        function: TermRef<'a>,
-        argument: TermRef<'a>,
-    ) -> TermRef<'a> {
+    pub fn application<'a>(&'a self, function: TermRef<'a>, argument: TermRef<'a>) -> TermRef<'a> {
         self.arena
             .put_no_drop(Term::Application(function, argument))
     }
