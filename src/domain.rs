@@ -167,24 +167,20 @@ impl<'a> Environment<'a> {
     }
 }
 
-pub fn apply<'a>(
-    function: ValueRef<'a>,
-    argument: ValueRef<'a>,
-    builder: &'a Builder,
-) -> ValueRef<'a> {
-    match function {
-        Value::Neutral { head, spine } => builder.neutral(
-            head.clone(),
-            ConstantSpine::from_iter(spine.iter().chain(std::iter::once(argument)), builder),
-        ),
-        Value::Literal(_) => panic!("Applying literal"),
-        Value::Lambda(_type, Closure { term, environment }) => Environment::from(environment)
-            .extend(argument, |environment| term.evaluate(environment, builder)),
-        Value::Pi(_, _) => panic!("Applying pi"),
-    }
-}
-
 impl<'a> Value<'a> {
+    pub fn apply(&self, argument: ValueRef<'a>, builder: &'a Builder) -> ValueRef<'a> {
+        match self {
+            Value::Neutral { head, spine } => builder.neutral(
+                head.clone(),
+                ConstantSpine::from_iter(spine.iter().chain(std::iter::once(argument)), builder),
+            ),
+            Value::Literal(_) => panic!("Applying literal"),
+            Value::Lambda(_type, Closure { term, environment }) => Environment::from(environment)
+                .extend(argument, |environment| term.evaluate(environment, builder)),
+            Value::Pi(_, _) => panic!("Applying pi"),
+        }
+    }
+
     pub fn apply_spine(
         self: ValueRef<'a>,
         mut spine: Spine<'a>,
