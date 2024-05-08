@@ -1,13 +1,13 @@
-use crate::syntax::{Index, Literal, Term, TermRef};
+use crate::syntax::{self, Index, Literal, Term, TermRef};
 
 #[derive(Clone, Copy)]
-pub struct Variable {
+pub struct Level {
     int: usize,
 }
 
 #[derive(Clone)]
 pub enum Head {
-    Variable(Variable),
+    Variable(Level),
 }
 
 pub struct Spine<'a> {
@@ -129,7 +129,7 @@ impl<'a> ConstantEnvironment<'a> {
 }
 
 impl Builder {
-    pub fn variable<'a>(&'a self, variable: Variable) -> ValueRef<'a> {
+    pub fn variable<'a>(&'a self, variable: Level) -> ValueRef<'a> {
         self.neutral(
             Head::Variable(variable),
             ConstantSpine {
@@ -179,100 +179,164 @@ pub fn apply<'a>(
         ),
         Value::Literal(_) => panic!("Applying literal"),
         Value::Lambda(_type, Closure { term, environment }) => Environment::from(environment)
-            .extend(argument, |environment| evaluate(term, environment, builder)),
+            .extend(argument, |environment| term.evaluate(environment, builder)),
         Value::Pi(_, _) => panic!("Applying pi"),
     }
 }
 
-pub fn apply_spine<'a>(
-    function: ValueRef<'a>,
-    mut spine: Spine<'a>,
-    builder: &'a Builder,
-) -> ValueRef<'a> {
-    if spine.is_empty() {
-        return function;
-    }
-    match function {
-        Value::Neutral {
-            head,
-            spine: function_spine,
-        } => {
-            let spine = ConstantSpine::from_iter(
-                function_spine.iter().chain(spine.iter().copied()),
-                builder,
-            );
-            builder.neutral(head.clone(), spine)
+impl<'a> Value<'a> {
+    pub fn apply_spine(
+        self: ValueRef<'a>,
+        mut spine: Spine<'a>,
+        builder: &'a Builder,
+    ) -> ValueRef<'a> {
+        if spine.is_empty() {
+            return self;
         }
-        Value::Literal(literal) => {
-            panic!("Applying literal")
-        }
-        Value::Lambda(_type, Closure { term, environment }) => {
-            if let Some(argument) = spine.pop_front() {
-                Environment::from(environment).extend(argument, |environment| {
-                    evaluate_with_spine(term, spine, environment, builder)
-                })
-            } else {
-                function
+        match self {
+            Value::Neutral {
+                head,
+                spine: function_spine,
+            } => {
+                let spine = ConstantSpine::from_iter(
+                    function_spine.iter().chain(spine.iter().copied()),
+                    builder,
+                );
+                builder.neutral(head.clone(), spine)
+            }
+            Value::Literal(literal) => {
+                panic!("Applying literal")
+            }
+            Value::Lambda(_type, Closure { term, environment }) => {
+                if let Some(argument) = spine.pop_front() {
+                    Environment::from(environment).extend(argument, |environment| {
+                        term.evaluate_with_spine(spine, environment, builder)
+                    })
+                } else {
+                    self
+                }
+            }
+            Value::Pi(_, _) => {
+                panic!("Applying pi")
             }
         }
-        Value::Pi(_, _) => {
-            panic!("Applying pi")
+    }
+}
+
+impl<'a> Term<'a> {
+    pub fn evaluate(
+        &self,
+        environment: &mut Environment<'a>,
+        builder: &'a Builder,
+    ) -> ValueRef<'a> {
+        self.evaluate_with_spine(Spine::new(), environment, builder)
+    }
+
+    pub fn evaluate_with_spine(
+        &self,
+        mut spine: Spine<'a>,
+        environment: &mut Environment<'a>,
+        builder: &'a Builder,
+    ) -> ValueRef<'a> {
+        match self {
+            Term::Variable(index) => {
+                let head = environment[*index];
+                head.apply_spine(spine, builder)
+            }
+            Term::Literal(literal) => {
+                assert!(spine.is_empty());
+                builder.literal(literal.clone())
+            }
+            Term::Lambda(type_, body) => {
+                if let Some(argument) = spine.pop_front() {
+                    environment.extend(argument, |environment| {
+                        body.evaluate_with_spine(spine, environment, builder)
+                    })
+                } else {
+                    let type_ = type_.evaluate(environment, builder);
+                    builder.lambda(
+                        type_,
+                        Closure {
+                            term: body,
+                            environment: ConstantEnvironment::from(environment, builder),
+                        },
+                    )
+                }
+            }
+            Term::Pi(domain, target) => {
+                assert!(spine.is_empty());
+                let domain = domain.evaluate(environment, builder);
+                let target_closure = Closure {
+                    environment: ConstantEnvironment::from(environment, builder),
+                    term: target,
+                };
+                builder.pi(domain, target_closure)
+            }
+            Term::Application(function, argument) => {
+                let argument = argument.evaluate(environment, builder);
+                spine.push_front(argument);
+                function.evaluate_with_spine(spine, environment, builder)
+            }
         }
     }
 }
 
-pub fn evaluate<'a>(
-    term: TermRef<'a>,
-    environment: &mut Environment<'a>,
-    builder: &'a Builder,
-) -> ValueRef<'a> {
-    evaluate_with_spine(term, Spine::new(), environment, builder)
-}
-
-pub fn evaluate_with_spine<'a>(
-    term: TermRef<'a>,
-    mut spine: Spine<'a>,
-    environment: &mut Environment<'a>,
-    builder: &'a Builder,
-) -> ValueRef<'a> {
-    match term {
-        Term::Variable(index) => {
-            let head = environment[*index];
-            apply_spine(head, spine, builder)
-        }
-        Term::Literal(literal) => {
-            assert!(spine.is_empty());
-            builder.literal(literal.clone())
-        }
-        Term::Lambda(type_, body) => {
-            if let Some(argument) = spine.pop_front() {
-                environment.extend(argument, |environment| {
-                    evaluate_with_spine(body, spine, environment, builder)
-                })
-            } else {
-                let type_ = evaluate(type_, environment, builder);
-                builder.lambda(
-                    type_,
-                    Closure {
-                        term: body,
-                        environment: ConstantEnvironment::from(environment, builder),
+impl<'a> Value<'a> {
+    pub fn quote(
+        &self,
+        level: Level,
+        builder: &'a Builder,
+        syntax_builder: &'a syntax::Builder,
+    ) -> syntax::TermRef<'a> {
+        match self {
+            Value::Neutral { head, spine } => head.quote(spine, level, builder, syntax_builder),
+            Value::Literal(literal) => syntax_builder.literal(literal.clone()),
+            Value::Lambda(type_, closure) => syntax_builder.lambda(
+                type_.quote(level, builder, syntax_builder),
+                Environment::from(&closure.environment).extend(
+                    builder.variable(level),
+                    |environment| {
+                        closure.term.evaluate(environment, builder).quote(
+                            Level { int: level.int + 1 },
+                            builder,
+                            syntax_builder,
+                        )
                     },
-                )
-            }
+                ),
+            ),
+            Value::Pi(domain, target_closure) => syntax_builder.pi(
+                domain.quote(level, builder, syntax_builder),
+                Environment::from(&target_closure.environment).extend(
+                    builder.variable(level),
+                    |environment| {
+                        target_closure.term.evaluate(environment, builder).quote(
+                            Level { int: level.int + 1 },
+                            builder,
+                            syntax_builder,
+                        )
+                    },
+                ),
+            ),
         }
-        Term::Pi(domain, target) => {
-            assert!(spine.is_empty());
-            let domain = evaluate(domain, environment, builder);
-            let target_closure = Closure {
-                environment: ConstantEnvironment::from(environment, builder),
-                term: target,
-            };
-            builder.pi(domain, target_closure)
+    }
+}
+
+impl Head {
+    pub fn quote<'a>(
+        &self,
+        spine: &ConstantSpine<'a>,
+        level: Level,
+        builder: &'a Builder,
+        syntax_builder: &'a syntax::Builder,
+    ) -> syntax::TermRef<'a> {
+        let mut result = match self {
+            Head::Variable(var_level) => syntax_builder.variable(Index {
+                int: level.int - var_level.int - 1,
+            }),
+        };
+        for arg in spine.iter() {
+            result = syntax_builder.application(result, arg.quote(level, builder, syntax_builder));
         }
-        Term::Application(function, argument) => {
-            let argument = evaluate(argument, environment, builder);
-            spine.push_front(argument);
-            evaluate_with_spine(function, spine, environment, builder)
-        }
+        result
     }
 }
