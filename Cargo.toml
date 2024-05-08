@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 blink-alloc = "0.3.1"
+rclite = "0.2.4"
