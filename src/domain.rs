@@ -10,21 +10,63 @@ pub enum Head {
     Variable(Variable),
 }
 
-pub struct Neutral<'a> {
-    head: Head,
-    spine: Spine<'a>,
-}
-
 pub struct Spine<'a> {
-    values: Vec<ValueRef<'a>>,
-}
-
-pub struct ConsSpine<'a> {
     reversed_values: Vec<ValueRef<'a>>,
 }
 
 pub struct ConstantSpine<'a> {
     values: &'a [ValueRef<'a>],
+}
+
+impl<'a> ConstantSpine<'a> {
+    pub fn from_iter<It>(iter: It, builder: &'a Builder) -> Self
+    where
+        It: Iterator<Item = ValueRef<'a>>,
+    {
+        ConstantSpine {
+            values: builder.arena.emplace_no_drop().from_iter(iter),
+        }
+    }
+
+    pub fn from_spine(spine: &'a Spine<'a>, builder: &'a Builder) -> Self {
+        Self::from_iter(spine.iter().copied(), builder)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = ValueRef<'a>> {
+        self.values.iter().copied()
+    }
+}
+
+impl<'a> From<&ConstantSpine<'a>> for Spine<'a> {
+    fn from(spine: &ConstantSpine<'a>) -> Self {
+        Spine {
+            reversed_values: Vec::from_iter(spine.values.iter().rev().map(|&v| v)),
+        }
+    }
+}
+
+impl<'a> Spine<'a> {
+    pub fn new() -> Self {
+        Spine {
+            reversed_values: Vec::new(),
+        }
+    }
+
+    pub fn push_front(&mut self, value: ValueRef<'a>) {
+        self.reversed_values.push(value)
+    }
+
+    pub fn pop_front(&mut self) -> Option<ValueRef<'a>> {
+        self.reversed_values.pop()
+    }
+
+    pub fn iter<'s>(&'s self) -> impl Iterator<Item = &'s ValueRef<'a>> {
+        self.reversed_values.iter().rev()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.reversed_values.is_empty()
+    }
 }
 
 pub struct Closure<'a> {
@@ -33,7 +75,10 @@ pub struct Closure<'a> {
 }
 
 pub enum Value<'a> {
-    Neutral { head: Head, spine: Spine<'a> },
+    Neutral {
+        head: Head,
+        spine: ConstantSpine<'a>,
+    },
     Literal(Literal),
     Lambda(TypeRef<'a>, Closure<'a>),
     Pi(TypeRef<'a>, Closure<'a>),
@@ -93,7 +138,7 @@ impl Builder {
         )
     }
 
-    pub fn neutral<'a>(&'a self, head: Head, spine: Spine<'a>) -> ValueRef<'a> {
+    pub fn neutral<'a>(&'a self, head: Head, spine: ConstantSpine<'a>) -> ValueRef<'a> {
         self.arena.put_no_drop(Value::Neutral { head, spine })
     }
 
@@ -128,11 +173,10 @@ pub fn apply<'a>(
     builder: &'a Builder,
 ) -> ValueRef<'a> {
     match function {
-        Value::Neutral { head, spine } => {
-            let mut spine = spine.clone();
-            spine.push(argument);
-            builder.neutral(head.clone(), spine)
-        }
+        Value::Neutral { head, spine } => builder.neutral(
+            head.clone(),
+            ConstantSpine::from_iter(spine.iter().chain(std::iter::once(argument)), builder),
+        ),
         Value::Literal(_) => panic!("Applying literal"),
         Value::Lambda(_type, Closure { term, environment }) => Environment::from(environment)
             .extend(argument, |environment| evaluate(term, environment, builder)),
@@ -142,30 +186,38 @@ pub fn apply<'a>(
 
 pub fn apply_spine<'a>(
     function: ValueRef<'a>,
-    mut reversed_spine: Spine<'a>,
+    mut spine: Spine<'a>,
     builder: &'a Builder,
 ) -> ValueRef<'a> {
+    if spine.is_empty() {
+        return function;
+    }
     match function {
-        Value::Neutral { head, spine } => {
-            reversed_spine.reverse();
-            let mut spine = spine.clone();
-            spine.append(&mut reversed_spine);
+        Value::Neutral {
+            head,
+            spine: function_spine,
+        } => {
+            let spine = ConstantSpine::from_iter(
+                function_spine.iter().chain(spine.iter().copied()),
+                builder,
+            );
             builder.neutral(head.clone(), spine)
         }
         Value::Literal(literal) => {
-            assert!(reversed_spine.is_empty());
-            builder.literal(literal.clone())
+            panic!("Applying literal")
         }
         Value::Lambda(_type, Closure { term, environment }) => {
-            if let Some(argument) = reversed_spine.pop() {
+            if let Some(argument) = spine.pop_front() {
                 Environment::from(environment).extend(argument, |environment| {
-                    evaluate_with_spine(term, reversed_spine, environment, builder)
+                    evaluate_with_spine(term, spine, environment, builder)
                 })
             } else {
                 function
             }
         }
-        Value::Pi(_, _) => todo!(),
+        Value::Pi(_, _) => {
+            panic!("Applying pi")
+        }
     }
 }
 
@@ -179,23 +231,23 @@ pub fn evaluate<'a>(
 
 pub fn evaluate_with_spine<'a>(
     term: TermRef<'a>,
-    mut reversed_spine: Spine<'a>,
+    mut spine: Spine<'a>,
     environment: &mut Environment<'a>,
     builder: &'a Builder,
 ) -> ValueRef<'a> {
     match term {
         Term::Variable(index) => {
             let head = environment[*index];
-            apply_spine(head, reversed_spine, builder)
+            apply_spine(head, spine, builder)
         }
         Term::Literal(literal) => {
-            assert!(reversed_spine.is_empty());
+            assert!(spine.is_empty());
             builder.literal(literal.clone())
         }
         Term::Lambda(type_, body) => {
-            if let Some(argument) = reversed_spine.pop() {
+            if let Some(argument) = spine.pop_front() {
                 environment.extend(argument, |environment| {
-                    evaluate_with_spine(body, reversed_spine, environment, builder)
+                    evaluate_with_spine(body, spine, environment, builder)
                 })
             } else {
                 let type_ = evaluate(type_, environment, builder);
@@ -208,11 +260,19 @@ pub fn evaluate_with_spine<'a>(
                 )
             }
         }
-        Term::Pi(_, _) => todo!(),
+        Term::Pi(domain, target) => {
+            assert!(spine.is_empty());
+            let domain = evaluate(domain, environment, builder);
+            let target_closure = Closure {
+                environment: ConstantEnvironment::from(environment, builder),
+                term: target,
+            };
+            builder.pi(domain, target_closure)
+        }
         Term::Application(function, argument) => {
             let argument = evaluate(argument, environment, builder);
-            reversed_spine.push(argument);
-            evaluate_with_spine(function, reversed_spine, environment, builder)
+            spine.push_front(argument);
+            evaluate_with_spine(function, spine, environment, builder)
         }
     }
 }
