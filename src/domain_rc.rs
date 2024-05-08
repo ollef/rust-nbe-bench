@@ -1,10 +1,8 @@
-use crate::syntax::{self, Index, Literal, Term, TermRef};
+use crate::{
+    index::{Index, Level},
+    syntax::{self, Term, TermRef},
+};
 use rclite::Rc;
-
-#[derive(Clone, Copy)]
-pub struct Level {
-    int: usize,
-}
 
 #[derive(Clone)]
 pub enum Head {
@@ -69,7 +67,7 @@ impl<'a> std::ops::Index<Index> for Environment<'a> {
     type Output = ValueRef<'a>;
 
     fn index(&self, index: Index) -> &Self::Output {
-        &self.values[index.int]
+        &self.values[index.to_int()]
     }
 }
 
@@ -184,7 +182,7 @@ impl<'a> Value<'a> {
                 let mut environment = environment.clone();
                 environment.extend(Value::variable(level));
                 term.evaluate_rc(&mut environment)
-                    .quote(Level { int: level.int + 1 }, syntax_builder)
+                    .quote(level + 1, syntax_builder)
             }),
         }
     }
@@ -198,9 +196,7 @@ impl Head {
         syntax_builder: &'a syntax::Builder,
     ) -> syntax::TermRef<'a> {
         let mut result = match self {
-            Head::Variable(var_level) => syntax_builder.variable(Index {
-                int: level.int - var_level.int - 1,
-            }),
+            Head::Variable(var_level) => syntax_builder.variable(var_level.to_index(level)),
         };
         for arg in spine.iter() {
             result = syntax_builder.application(result, arg.quote(level, syntax_builder));

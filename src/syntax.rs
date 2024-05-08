@@ -1,7 +1,4 @@
-#[derive(Copy, Clone)]
-pub struct Index {
-    pub int: usize,
-}
+use crate::index::Index;
 
 #[derive(Clone)]
 
