@@ -156,13 +156,18 @@ impl Builder {
 }
 
 impl<'a> Environment<'a> {
-    pub fn extend<F, A>(&mut self, value: ValueRef<'a>, f: F) -> A
+    pub fn extend(&mut self, value: ValueRef<'a>) {
+        self.values.push(value)
+    }
+
+    pub fn local<F, Result>(&mut self, f: F) -> Result
     where
-        F: FnOnce(&mut Self) -> A,
+        F: FnOnce(&mut Self) -> Result,
     {
-        self.values.push(value);
+        let len_before = self.values.len();
         let result = f(self);
-        self.values.pop();
+        assert!(self.values.len() >= len_before);
+        self.values.truncate(len_before);
         result
     }
 }
@@ -175,8 +180,11 @@ impl<'a> Value<'a> {
                 ConstantSpine::from_iter(spine.iter().chain(std::iter::once(argument)), builder),
             ),
             Value::Literal(_) => panic!("Applying literal"),
-            Value::Lambda(_type, Closure { term, environment }) => Environment::from(environment)
-                .extend(argument, |environment| term.evaluate(environment, builder)),
+            Value::Lambda(_type, Closure { term, environment }) => {
+                let mut environment = Environment::from(environment);
+                environment.extend(argument);
+                term.evaluate(&mut environment, builder)
+            }
             Value::Pi(_, _) => panic!("Applying pi"),
         }
     }
@@ -205,9 +213,9 @@ impl<'a> Value<'a> {
             }
             Value::Lambda(_type, Closure { term, environment }) => {
                 if let Some(argument) = spine.pop_front() {
-                    Environment::from(environment).extend(argument, |environment| {
-                        term.evaluate_with_spine(spine, environment, builder)
-                    })
+                    let mut environment = Environment::from(environment);
+                    environment.extend(argument);
+                    term.evaluate_with_spine(spine, &mut environment, builder)
                 } else {
                     self
                 }
@@ -245,9 +253,8 @@ impl<'a> Term<'a> {
             }
             Term::Lambda(type_, body) => {
                 if let Some(argument) = spine.pop_front() {
-                    environment.extend(argument, |environment| {
-                        body.evaluate_with_spine(spine, environment, builder)
-                    })
+                    environment.extend(argument);
+                    body.evaluate_with_spine(spine, environment, builder)
                 } else {
                     let type_ = type_.evaluate(environment, builder);
                     builder.lambda(
@@ -269,7 +276,8 @@ impl<'a> Term<'a> {
                 builder.pi(domain, target_closure)
             }
             Term::Application(function, argument) => {
-                let argument = argument.evaluate(environment, builder);
+                let argument =
+                    environment.local(|environment| argument.evaluate(environment, builder));
                 spine.push_front(argument);
                 function.evaluate_with_spine(spine, environment, builder)
             }
@@ -287,32 +295,27 @@ impl<'a> Value<'a> {
         match self {
             Value::Neutral { head, spine } => head.quote(spine, level, builder, syntax_builder),
             Value::Literal(literal) => syntax_builder.literal(literal.clone()),
-            Value::Lambda(type_, closure) => syntax_builder.lambda(
-                type_.quote(level, builder, syntax_builder),
-                Environment::from(&closure.environment).extend(
-                    builder.variable(level),
-                    |environment| {
-                        closure.term.evaluate(environment, builder).quote(
-                            Level { int: level.int + 1 },
-                            builder,
-                            syntax_builder,
-                        )
-                    },
-                ),
-            ),
-            Value::Pi(domain, target_closure) => syntax_builder.pi(
-                domain.quote(level, builder, syntax_builder),
-                Environment::from(&target_closure.environment).extend(
-                    builder.variable(level),
-                    |environment| {
-                        target_closure.term.evaluate(environment, builder).quote(
-                            Level { int: level.int + 1 },
-                            builder,
-                            syntax_builder,
-                        )
-                    },
-                ),
-            ),
+            Value::Lambda(type_, closure) => {
+                syntax_builder.lambda(type_.quote(level, builder, syntax_builder), {
+                    let mut environment = Environment::from(&closure.environment);
+                    environment.extend(builder.variable(level));
+                    closure.term.evaluate(&mut environment, builder).quote(
+                        Level { int: level.int + 1 },
+                        builder,
+                        syntax_builder,
+                    )
+                })
+            }
+            Value::Pi(domain, target_closure) => {
+                syntax_builder.pi(domain.quote(level, builder, syntax_builder), {
+                    let mut environment = Environment::from(&target_closure.environment);
+                    environment.extend(builder.variable(level));
+                    target_closure
+                        .term
+                        .evaluate(&mut environment, builder)
+                        .quote(Level { int: level.int + 1 }, builder, syntax_builder)
+                })
+            }
         }
     }
 }

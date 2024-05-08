@@ -76,13 +76,18 @@ impl<'a> std::ops::Index<Index> for Environment<'a> {
 }
 
 impl<'a> Environment<'a> {
-    pub fn extend<F, A>(&mut self, value: ValueRef<'a>, f: F) -> A
+    pub fn extend(&mut self, value: ValueRef<'a>) {
+        self.values.push(value)
+    }
+
+    pub fn local<F, A>(&mut self, f: F) -> A
     where
         F: FnOnce(&mut Self) -> A,
     {
-        self.values.push(value);
+        let len_before = self.values.len();
         let result = f(self);
-        self.values.pop();
+        assert!(self.values.len() >= len_before);
+        self.values.truncate(len_before);
         result
     }
 }
@@ -103,9 +108,11 @@ pub fn apply<'a>(function: &Value<'a>, argument: ValueRef<'a>) -> ValueRef<'a> {
             spine: Vec::from_iter(spine.iter().cloned().chain(std::iter::once(argument))),
         }),
         Value::Literal(_) => panic!("Applying literal"),
-        Value::Lambda(_type, Closure { term, environment }) => environment
-            .clone()
-            .extend(argument, |environment| term.evaluate_rc(environment)),
+        Value::Lambda(_type, Closure { term, environment }) => {
+            let mut environment = environment.clone();
+            environment.extend(argument);
+            term.evaluate_rc(&mut environment)
+        }
         Value::Pi(_, _) => panic!("Applying pi"),
     }
 }
@@ -126,14 +133,14 @@ pub fn apply_spine<'a>(function: &ValueRef<'a>, mut spine: Spine<'a>) -> ValueRe
                 spine: new_spine,
             })
         }
-        Value::Literal(literal) => {
+        Value::Literal(_) => {
             panic!("Applying literal")
         }
         Value::Lambda(_type, Closure { term, environment }) => {
             if let Some(argument) = spine.pop_front() {
-                environment.clone().extend(argument, |environment| {
-                    term.evaluate_with_spine_rc(spine, environment)
-                })
+                let mut environment = environment.clone();
+                environment.extend(argument);
+                term.evaluate_with_spine_rc(spine, &mut environment)
             } else {
                 function.clone()
             }
@@ -165,9 +172,8 @@ impl<'a> Term<'a> {
             }
             Term::Lambda(type_, body) => {
                 if let Some(argument) = spine.pop_front() {
-                    environment.extend(argument, |environment| {
-                        body.evaluate_with_spine_rc(spine, environment)
-                    })
+                    environment.extend(argument);
+                    body.evaluate_with_spine_rc(spine, environment)
                 } else {
                     let type_ = type_.evaluate_rc(environment);
                     Rc::new(Value::Lambda(
@@ -202,30 +208,22 @@ impl<'a> Value<'a> {
         match self {
             Value::Neutral { head, spine } => head.quote(spine, level, syntax_builder),
             Value::Literal(literal) => syntax_builder.literal(literal.clone()),
-            Value::Lambda(type_, closure) => syntax_builder.lambda(
-                type_.quote(level, syntax_builder),
-                closure
-                    .environment
-                    .clone()
-                    .extend(Value::variable(level), |environment| {
-                        closure
-                            .term
-                            .evaluate_rc(environment)
-                            .quote(Level { int: level.int + 1 }, syntax_builder)
-                    }),
-            ),
-            Value::Pi(domain, target_closure) => syntax_builder.pi(
-                domain.quote(level, syntax_builder),
-                target_closure
-                    .environment
-                    .clone()
-                    .extend(Value::variable(level), |environment| {
-                        target_closure
-                            .term
-                            .evaluate_rc(environment)
-                            .quote(Level { int: level.int + 1 }, syntax_builder)
-                    }),
-            ),
+            Value::Lambda(type_, Closure { term, environment }) => {
+                syntax_builder.lambda(type_.quote(level, syntax_builder), {
+                    let mut environment = environment.clone();
+                    environment.extend(Value::variable(level));
+                    term.evaluate_rc(&mut environment)
+                        .quote(Level { int: level.int + 1 }, syntax_builder)
+                })
+            }
+            Value::Pi(domain, Closure { term, environment }) => {
+                syntax_builder.pi(domain.quote(level, syntax_builder), {
+                    let mut environment = environment.clone();
+                    environment.extend(Value::variable(level));
+                    term.evaluate_rc(&mut environment)
+                        .quote(Level { int: level.int + 1 }, &syntax_builder)
+                })
+            }
         }
     }
 }
