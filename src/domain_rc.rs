@@ -153,26 +153,30 @@ impl<'a> Term<'a> {
         mut spine: Spine<'a>,
         environment: &mut Environment<'a>,
     ) -> ValueRef<'a> {
-        match self {
-            Term::Variable(index) => {
-                let head = &environment[*index];
-                apply_spine(head, spine)
-            }
-            Term::Lambda(body) => {
-                if let Some(argument) = spine.pop_front() {
-                    environment.extend(argument);
-                    body.evaluate_with_spine_rc(spine, environment)
-                } else {
-                    Rc::new(Value::Lambda(Closure {
-                        term: body,
-                        environment: environment.clone(),
-                    }))
+        let mut head = self;
+        loop {
+            match head {
+                Term::Variable(index) => {
+                    let head = &environment[*index];
+                    return apply_spine(head, spine);
                 }
-            }
-            Term::Application(function, argument) => {
-                let argument = argument.evaluate_rc(environment);
-                spine.push_front(argument);
-                function.evaluate_with_spine_rc(spine, environment)
+                Term::Lambda(body) => {
+                    if let Some(argument) = spine.pop_front() {
+                        environment.extend(argument);
+                        head = body;
+                    } else {
+                        return Rc::new(Value::Lambda(Closure {
+                            term: body,
+                            environment: environment.clone(),
+                        }));
+                    }
+                }
+                Term::Application(function, argument) => {
+                    let argument =
+                        environment.local(|environment| argument.evaluate_rc(environment));
+                    spine.push_front(argument);
+                    head = function;
+                }
             }
         }
     }
