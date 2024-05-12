@@ -67,7 +67,7 @@ impl<'a> std::ops::Index<Index> for Environment<'a> {
     type Output = ValueRef<'a>;
 
     fn index(&self, index: Index) -> &Self::Output {
-        &self.values[index.to_int()]
+        &self.values[self.values.len() - index.to_int() - 1]
     }
 }
 
