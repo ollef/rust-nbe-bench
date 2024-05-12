@@ -9,3 +9,10 @@ edition = "2021"
 blink-alloc = "0.3.1"
 rclite = "0.2.4"
 mimalloc = { version = "*", default-features = false }
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "normalization"
+harness = false
