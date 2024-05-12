@@ -17,6 +17,11 @@ pub struct Builder {
 }
 
 impl Builder {
+    pub fn new() -> Self {
+        Builder {
+            arena: blink_alloc::Blink::new(),
+        }
+    }
     pub fn variable<'a>(&'a self, index: Index) -> TermRef<'a> {
         self.arena.put_no_drop(Term::Variable(index))
     }
