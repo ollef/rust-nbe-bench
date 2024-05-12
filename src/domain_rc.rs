@@ -72,6 +72,10 @@ impl<'a> std::ops::Index<Index> for Environment<'a> {
 }
 
 impl<'a> Environment<'a> {
+    pub fn new() -> Self {
+        Environment { values: Vec::new() }
+    }
+
     pub fn extend(&mut self, value: ValueRef<'a>) {
         self.values.push(value)
     }
