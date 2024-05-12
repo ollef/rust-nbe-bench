@@ -1,6 +1,6 @@
 use crate::index::Index;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 
 pub enum Term<'a> {
     Variable(Index),
